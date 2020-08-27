@@ -1,0 +1,41 @@
+# The below settings are all optional
+fade_in = 5.0 # how long, in seconds, it takes for a song to reach max volume after it starts playing
+fade_out = 5.0 # how long, in seconds, it takes for a song to reach max volume once it starts to stop playing
+initial_fade = 5.0 # how long, in seconds, the current song takes to fade in at program startup
+update_interval = 60.0 # how long, in seconds, the program should sleep before checking if a new song should play
+
+anchor_time = "00:00:00" # If this is not set, defaults to the time the program was started at 
+# The program will attempt to align its song switching to integer multiples of the update interval relative to this time
+# For example, with the settings of anchor_time = "00:00:30" and update_interval = 60.0, the program will try to always check for a new song at 30 seconds into the current minute
+# A setting of anchor_time = "00:12:34" and update_interval = 3600.0 will cause the program to always check for a new song 12 minutes and 34 seconds into each hour of the day
+
+dir = "/my_music_folder/hourly_clips/" # directory to open files relative to, if not set defaults to the current directory
+
+# These files are relative to the directory above, this setting is required
+[times]
+"00:00:00" = "12AM.ogg"
+# Absolute paths can be used as well
+"00:30:00" = "/my_music_folder/other_song.ogg"
+"01:00:00" = "1AM.ogg"
+"02:00:00" = "2AM.ogg"
+"03:00:00" = "3AM.ogg"
+"04:00:00" = "4AM.ogg"
+"05:00:00" = "5AM.ogg"
+"06:00:00" = "6AM.ogg"
+"07:00:00" = "7AM.ogg"
+"08:00:00" = "8AM.ogg"
+"09:00:00" = "9AM.ogg"
+"10:00:00" = "10AM.ogg"
+"11:00:00" = "11AM.ogg"
+"12:00:00" = "12PM.ogg"
+"13:00:00" = "1PM.ogg"
+"14:00:00" = "2PM.ogg"
+"15:00:00" = "3PM.ogg"
+"16:00:00" = "4PM.ogg"
+"17:00:00" = "5PM.ogg"
+"18:00:00" = "6PM.ogg"
+"19:00:00" = "7PM.ogg"
+"20:00:00" = "8PM.ogg"
+"21:00:00" = "9PM.ogg"
+"22:00:00" = "10PM.ogg"
+"23:00:00" = "11PM.ogg"
