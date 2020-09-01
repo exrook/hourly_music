@@ -1,6 +1,6 @@
 use chrono::{Local, NaiveTime};
 use rodio::{self, Sink, Source};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::TryInto;
@@ -9,14 +9,13 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Config {
     initial_fade: Option<f32>,
     fade_in: Option<f32>,
     fade_out: Option<f32>,
     update_interval: Option<f32>,
     anchor_time: Option<NaiveTime>,
-    reload_config: Option<bool>,
     dir: Option<PathBuf>,
     times: HashMap<String, BTreeMap<NaiveTime, PathBuf>>,
 }
@@ -33,7 +32,28 @@ struct LoadedConfig {
 }
 
 impl Config {
-    fn load<P: AsRef<Path>>(path: P) -> LoadedConfig {
+    #[cfg(target_os = "android")]
+    fn load() -> LoadedConfig {
+        use std::ffi::OsStr;
+        use std::io::Write;
+        use std::os::unix::ffi::OsStrExt;
+        let data_path = Path::new(OsStr::from_bytes(
+            ndk_glue::native_activity().external_data_path().to_bytes(),
+        ));
+        let config_path = data_path.join("config.toml");
+        if !config_path.exists() {
+            let default_config = include_bytes!("../example-config.toml");
+            fs::write(&config_path, &default_config[..]).expect("Unable to write config file");
+        }
+        let mut config = Self::load_common(config_path);
+        config.dir = Some(data_path.into());
+        config
+    }
+    #[cfg(not(target_os = "android"))]
+    fn load() -> LoadedConfig {
+        Self::load_common("config.toml")
+    }
+    fn load_common<P: AsRef<Path>>(path: P) -> LoadedConfig {
         let config: Config = toml::from_slice(&fs::read(path).expect("Unable to load config file"))
             .expect("Invalid config file");
         let fade_in = Duration::from_secs_f32(config.fade_in.unwrap_or(5.0));
@@ -49,6 +69,19 @@ impl Config {
             dir: config.dir,
             times: config.times,
         }
+    }
+    fn save<P: AsRef<Path>>(config: LoadedConfig, path: P) {
+        let config = Config {
+            fade_in: Some(config.fade_in.as_secs_f32()),
+            fade_out: Some(config.fade_out.as_secs_f32()),
+            initial_fade: Some(config.initial_fade.as_secs_f32()),
+            update_interval: Some(config.update_interval.as_secs_f32()),
+            anchor_time: config.anchor_time,
+            dir: config.dir,
+            times: config.times,
+        };
+        let out = toml::to_vec(&config).expect("Unable to serialize config file");
+        fs::write(path, out).expect("Unable to write config file");
     }
 }
 
@@ -80,8 +113,9 @@ impl LoadedConfig {
     }
 }
 
+#[cfg_attr(target_os = "android", ndk_glue::main(backtrace = "on"))]
 pub fn main() {
-    let config = Config::load("config.toml");
+    let config = Config::load();
 
     let start = Local::now();
     let mut current_song_path = config.current_song(start.time());
@@ -119,7 +153,6 @@ pub fn main() {
                 .fade_in(config.fade_in),
             );
         }
-        println!("E");
         // Don't let our update interval drift
         let remainder = (now.time() - anchor_time)
             .to_std()
@@ -128,8 +161,6 @@ pub fn main() {
             .and_then(|m| m.try_into().ok())
             .map(Duration::from_micros)
             .map(|r| config.update_interval - r);
-        dbg!(remainder);
-        dbg!(now.time(), anchor_time);
         thread::sleep(remainder.unwrap_or(config.update_interval));
     }
 }

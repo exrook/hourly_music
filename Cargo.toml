@@ -4,7 +4,16 @@ version = "0.1.0"
 authors = ["Jacob Hughes <j@jacobhughes.me>"]
 edition = "2018"
 license = "GPL2.0+"
+[package.metadata.android]
+target_sdk_version = 30
 
+[[package.metadata.android.feature]]
+name = "android.hardware.audio.output"
+required = true
+
+[[package.metadata.android.feature]]
+name = "android.hardware.audio.low_latency"
+required = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -13,5 +22,20 @@ serde = {version = "^1", features = ["derive"]}
 toml = "^0.5"
 chrono = {version = "^0.4", features = ["serde"]}
 
+[target.'cfg(target_os = "android")'.dependencies]
+ndk-glue = "0.1"
+ndk = "0.1"
+
 [patch.crates-io]
 rodio = {git = "https://github.com/exrook/rodio"}
+cpal = {git = "https://github.com/exrook/cpal", branch="android" }
+ndk = {git = "https://github.com/rust-windowing/android-ndk-rs"}
+ndk-glue = {git = "https://github.com/rust-windowing/android-ndk-rs"}
+ndk-sys = {git = "https://github.com/rust-windowing/android-ndk-rs"}
+ndk-macro = {git = "https://github.com/rust-windowing/android-ndk-rs"}
+
+[profile.release]
+debug = true
+
+[lib]
+crate-type = ["lib", "cdylib"]

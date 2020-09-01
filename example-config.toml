@@ -12,7 +12,7 @@ anchor_time = "00:00:00" # If this is not set, defaults to the time the program 
 dir = "/my_music_folder/hourly_clips/" # directory to open files relative to, if not set defaults to the current directory
 
 # These files are relative to the directory above, this setting is required
-[times]
+[times.normal]
 "00:00:00" = "12AM.ogg"
 # Absolute paths can be used as well
 "00:30:00" = "/my_music_folder/other_song.ogg"
