@@ -1,4 +1,6 @@
 use chrono::{Local, NaiveTime};
+#[cfg(feature = "gui")]
+use parking_lot::{Condvar, Mutex};
 use rodio::{self, Sink, Source};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -6,11 +8,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::convert::TryInto;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "gui")]
+use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "gui")]
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Config {
+#[cfg(feature = "gui")]
+mod gui;
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Config {
     initial_fade: Option<f32>,
     fade_in: Option<f32>,
     fade_out: Option<f32>,
@@ -20,8 +29,8 @@ struct Config {
     times: HashMap<String, BTreeMap<NaiveTime, PathBuf>>,
 }
 
-#[derive(Debug)]
-struct LoadedConfig {
+#[derive(Debug, Clone)]
+pub struct LoadedConfig {
     initial_fade: Duration,
     fade_in: Duration,
     fade_out: Duration,
@@ -56,22 +65,30 @@ impl Config {
     fn load_common<P: AsRef<Path>>(path: P) -> LoadedConfig {
         let config: Config = toml::from_slice(&fs::read(path).expect("Unable to load config file"))
             .expect("Invalid config file");
-        let fade_in = Duration::from_secs_f32(config.fade_in.unwrap_or(5.0));
+        config.to_loaded()
+    }
+    fn save<P: AsRef<Path>>(config: LoadedConfig, path: P) {
+        let config = Config::from_loaded(config);
+        let out = toml::to_vec(&config).expect("Unable to serialize config file");
+        fs::write(path, out).expect("Unable to write config file");
+    }
+    fn to_loaded(self) -> LoadedConfig {
+        let fade_in = Duration::from_secs_f32(self.fade_in.unwrap_or(5.0));
         LoadedConfig {
             fade_in,
-            fade_out: Duration::from_secs_f32(config.fade_out.unwrap_or(5.0)),
-            initial_fade: config
+            fade_out: Duration::from_secs_f32(self.fade_out.unwrap_or(5.0)),
+            initial_fade: self
                 .initial_fade
                 .map(Duration::from_secs_f32)
                 .unwrap_or(fade_in),
-            update_interval: Duration::from_secs_f32(config.update_interval.unwrap_or(60.0)),
-            anchor_time: config.anchor_time,
-            dir: config.dir,
-            times: config.times,
+            update_interval: Duration::from_secs_f32(self.update_interval.unwrap_or(60.0)),
+            anchor_time: self.anchor_time,
+            dir: self.dir,
+            times: self.times,
         }
     }
-    fn save<P: AsRef<Path>>(config: LoadedConfig, path: P) {
-        let config = Config {
+    fn from_loaded(config: LoadedConfig) -> Self {
+        Config {
             fade_in: Some(config.fade_in.as_secs_f32()),
             fade_out: Some(config.fade_out.as_secs_f32()),
             initial_fade: Some(config.initial_fade.as_secs_f32()),
@@ -79,9 +96,7 @@ impl Config {
             anchor_time: config.anchor_time,
             dir: config.dir,
             times: config.times,
-        };
-        let out = toml::to_vec(&config).expect("Unable to serialize config file");
-        fs::write(path, out).expect("Unable to write config file");
+        }
     }
 }
 
@@ -113,12 +128,104 @@ impl LoadedConfig {
     }
 }
 
+#[cfg(not(feature = "gui"))]
+struct Sleeper {
+    config: LoadedConfig,
+    anchor_time: NaiveTime,
+}
+
+#[cfg(feature = "gui")]
+struct Sleeper {
+    condvar: std::sync::Arc<(Mutex<Config>, Condvar)>,
+    config: LoadedConfig,
+    anchor_time: NaiveTime,
+    gain: Arc<AtomicU32>,
+}
+
+#[cfg(not(feature = "gui"))]
+impl Sleeper {
+    fn new(config: LoadedConfig, anchor_time: NaiveTime) -> Self {
+        Self {
+            config,
+            anchor_time,
+        }
+    }
+    fn sleep(&mut self, now: chrono::DateTime<Local>) {
+        let anchor_time = self.config.anchor_time.unwrap_or(self.anchor_time);
+        thread::sleep(calculate_sleep_duration(
+            anchor_time,
+            now,
+            self.config.update_interval,
+        ))
+    }
+}
+
+#[cfg(feature = "gui")]
+impl Sleeper {
+    fn new(config: LoadedConfig, anchor_time: NaiveTime) -> Self {
+        let pair = Arc::new((
+            Mutex::new(Config::from_loaded(config.clone())),
+            Condvar::new(),
+        ));
+        let pair2 = pair.clone();
+        let config2 = config.clone();
+        let gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let gain2 = gain.clone();
+
+        thread::spawn(move || {
+            //let &(ref lock, ref condvar) = &*pair2;
+            gui::gui_main(pair2, gain2, Config::from_loaded(config2)).unwrap();
+        });
+
+        Self {
+            condvar: pair,
+            config,
+            anchor_time,
+            gain,
+        }
+    }
+    fn sleep(&mut self, now: chrono::DateTime<Local>) {
+        let anchor_time = self.config.anchor_time.unwrap_or(self.anchor_time);
+        let &(ref mutex, ref condvar) = &*self.condvar;
+        let mut new_config = mutex.lock();
+        if !condvar
+            .wait_for(
+                &mut new_config,
+                calculate_sleep_duration(anchor_time, now, self.config.update_interval),
+            )
+            .timed_out()
+        {
+            self.config = new_config.clone().to_loaded()
+        }
+    }
+    fn gain(&self) -> f32 {
+        f32::from_bits(self.gain.load(Ordering::Relaxed))
+    }
+}
+
+fn calculate_sleep_duration(
+    anchor_time: NaiveTime,
+    now: chrono::DateTime<Local>,
+    update_interval: Duration,
+) -> Duration {
+    // Don't let our update interval drift
+    let remainder = (now.time() - anchor_time)
+        .to_std()
+        .ok()
+        .map(|r| r.as_micros() % update_interval.as_micros())
+        .and_then(|m| m.try_into().ok())
+        .map(Duration::from_micros)
+        .map(|r| update_interval - r);
+    remainder.unwrap_or(update_interval)
+}
+
 #[cfg_attr(target_os = "android", ndk_glue::main(backtrace = "on"))]
 pub fn main() {
     let config = Config::load();
 
     let start = Local::now();
-    let mut current_song_path = config.current_song(start.time());
+    let mut sleeper = Sleeper::new(config, start.time());
+    let mut current_song_path = sleeper.config.current_song(start.time()).into_owned();
     println!("Starting with {:?}", current_song_path);
 
     let (_stream, stream_handle) =
@@ -126,42 +233,36 @@ pub fn main() {
     let mut current_song = Sink::try_new(&stream_handle).unwrap();
     current_song.append(
         rodio::Decoder::new_looped(
-            File::open(current_song_path.as_ref())
+            File::open(&current_song_path)
                 .expect("Error opening song file, check if the file path is correct"),
         )
         .expect("Error parsing audio file")
-        .fade_in(config.initial_fade),
+        .fade_in(sleeper.config.initial_fade),
     );
-    let anchor_time = config.anchor_time.unwrap_or(start.time());
 
     loop {
         let now = Local::now();
 
-        let new_path = config.current_song(now.time());
+        #[cfg(feature = "gui")]
+        current_song.set_volume(sleeper.gain());
+
+        let new_path = sleeper.config.current_song(now.time()).into_owned();
         if new_path != current_song_path {
             println!("Changing songs, new song: {:?}", new_path);
             current_song_path = new_path;
 
-            fade_out(current_song, config.fade_out);
+            fade_out(current_song, sleeper.config.fade_out);
             current_song = Sink::try_new(&stream_handle).unwrap();
             current_song.append(
                 rodio::Decoder::new_looped(
-                    File::open(current_song_path.as_ref())
+                    File::open(&current_song_path)
                         .expect("Error opening song file, check if the file path is correct"),
                 )
                 .expect("Error parsing audio file")
-                .fade_in(config.fade_in),
+                .fade_in(sleeper.config.fade_in),
             );
         }
-        // Don't let our update interval drift
-        let remainder = (now.time() - anchor_time)
-            .to_std()
-            .ok()
-            .map(|r| r.as_micros() % config.update_interval.as_micros())
-            .and_then(|m| m.try_into().ok())
-            .map(Duration::from_micros)
-            .map(|r| config.update_interval - r);
-        thread::sleep(remainder.unwrap_or(config.update_interval));
+        sleeper.sleep(now);
     }
 }
 
